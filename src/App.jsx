@@ -111,7 +111,7 @@ export default function App() {
       formData.append("model", "whisper-1");
       formData.append("response_format", "verbose_json");
       formData.append("timestamp_granularities[]", "segment");
-      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      const res = await fetch("/api/transcribe", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}` },
         body: formData,
