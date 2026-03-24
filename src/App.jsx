@@ -113,7 +113,6 @@ export default function App() {
       formData.append("timestamp_granularities[]", "segment");
       const res = await fetch("/api/transcribe", {
         method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}` },
         body: formData,
       });
       if (!res.ok) {
