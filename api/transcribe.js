@@ -21,8 +21,3 @@ export default async function handler(req, res) {
 export const config = {
   api: { bodyParser: false },
 };
-```
-
-Commit that. Then go to **github.com/tommy-logan-ai/voice-transcriber/blob/main/src/App.jsx**, find line 116 which says:
-```
-headers: { Authorization: `Bearer ${apiKey}` },
