@@ -134,7 +134,7 @@ export default function App() {
     const rawText = whisperData.segments.map((s) => `[${formatTime(s.start)}] ${s.text.trim()}`).join("\n");
     const systemPrompt = `You are an expert conversation analyst for a real estate and mortgage professional named Tommy. Analyze the transcript and assign speaker labels. Use up to ${numSpeakers} speakers. Write a 3-5 sentence summary for a ${memoType} context. Extract action items. Return ONLY valid JSON: {"segments":[{"start":0,"end":5,"speaker":"Speaker_0","text":"..."}],"speakerGuesses":{"Speaker_0":"Tommy (likely)","Speaker_1":"Client"},"summary":"...","actionItems":["..."]}`;
     const userPrompt = `Memo type: ${memoType}\nSpeakers: ${numSpeakers}\n\n${rawText}\n\nTiming: ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, text: s.text })))}`;
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch("/api/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000, system: systemPrompt, messages: [{ role: "user", content: userPrompt }] }),
