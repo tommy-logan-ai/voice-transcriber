@@ -12,8 +12,8 @@ function speakerColor(index) {
 }
 
 export default function App() {
-  const [apiKey, setApiKey] = useState("");
-  const [keyConfirmed, setKeyConfirmed] = useState(false);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("openai_key") || "");
+  const [keyConfirmed, setKeyConfirmed] = useState(() => !!localStorage.getItem("openai_key"));
   const [audioFile, setAudioFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
   const [numSpeakers, setNumSpeakers] = useState(2);
@@ -28,6 +28,19 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("transcript");
   const [error, setError] = useState("");
   const fileRef = useRef();
+
+  const confirmKey = () => {
+    if (apiKey.startsWith("sk-")) {
+      localStorage.setItem("openai_key", apiKey);
+      setKeyConfirmed(true);
+    }
+  };
+
+  const clearKey = () => {
+    localStorage.removeItem("openai_key");
+    setApiKey("");
+    setKeyConfirmed(false);
+  };
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -47,88 +60,43 @@ export default function App() {
   };
 
   const compressAudio = async (file) => {
-    // If file is under 24MB, no compression needed
     if (file.size < 24 * 1024 * 1024) return file;
-
-    setProgress("File is large — compressing audio...");
-
+    setProgress("Large file detected — compressing audio...");
     return new Promise((resolve, reject) => {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const reader = new FileReader();
-
       reader.onload = async (e) => {
         try {
-          const arrayBuffer = e.target.result;
-          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
-          // Downsample to 16kHz mono (ideal for speech)
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const audioBuffer = await audioContext.decodeAudioData(e.target.result);
           const targetSampleRate = 16000;
-          const offlineCtx = new OfflineAudioContext(
-            1, // mono
-            Math.ceil(audioBuffer.duration * targetSampleRate),
-            targetSampleRate
-          );
-
+          const offlineCtx = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * targetSampleRate), targetSampleRate);
           const source = offlineCtx.createBufferSource();
           source.buffer = audioBuffer;
           source.connect(offlineCtx.destination);
           source.start();
-
-          const renderedBuffer = await offlineCtx.startRendering();
-
-          // Convert to WAV
-          const wavBlob = audioBufferToWav(renderedBuffer);
-          const compressedFile = new File([wavBlob], file.name.replace(/\.[^.]+$/, '.wav'), { type: 'audio/wav' });
-          resolve(compressedFile);
-        } catch (err) {
-          reject(err);
-        }
+          const rendered = await offlineCtx.startRendering();
+          const dataSize = rendered.length * 2;
+          const ab = new ArrayBuffer(44 + dataSize);
+          const view = new DataView(ab);
+          const ws = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+          ws(0,"RIFF"); view.setUint32(4,36+dataSize,true); ws(8,"WAVE"); ws(12,"fmt ");
+          view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+          view.setUint32(24,16000,true); view.setUint32(28,32000,true);
+          view.setUint16(32,2,true); view.setUint16(34,16,true);
+          ws(36,"data"); view.setUint32(40,dataSize,true);
+          let offset = 44;
+          const ch = rendered.getChannelData(0);
+          for (let i = 0; i < rendered.length; i++) {
+            const s = Math.max(-1, Math.min(1, ch[i]));
+            view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            offset += 2;
+          }
+          resolve(new File([new Blob([ab], {type:"audio/wav"})], file.name.replace(/\.[^.]+$/, ".wav"), {type:"audio/wav"}));
+        } catch(err) { reject(err); }
       };
       reader.onerror = reject;
       reader.readAsArrayBuffer(file);
     });
-  };
-
-  const audioBufferToWav = (buffer) => {
-    const numChannels = buffer.numberOfChannels;
-    const sampleRate = buffer.sampleRate;
-    const format = 1; // PCM
-    const bitDepth = 16;
-    const bytesPerSample = bitDepth / 8;
-    const blockAlign = numChannels * bytesPerSample;
-    const byteRate = sampleRate * blockAlign;
-    const dataSize = buffer.length * blockAlign;
-    const arrayBuffer = new ArrayBuffer(44 + dataSize);
-    const view = new DataView(arrayBuffer);
-
-    const writeString = (offset, str) => {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-    };
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + dataSize, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, format, true);
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitDepth, true);
-    writeString(36, 'data');
-    view.setUint32(40, dataSize, true);
-
-    let offset = 44;
-    for (let i = 0; i < buffer.length; i++) {
-      for (let ch = 0; ch < numChannels; ch++) {
-        const sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
-        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-        offset += 2;
-      }
-    }
-
-    return new Blob([arrayBuffer], { type: 'audio/wav' });
   };
 
   const transcribe = async () => {
@@ -136,10 +104,8 @@ export default function App() {
     try {
       setStage("transcribing");
       setProgress("Preparing audio...");
-
       const fileToSend = await compressAudio(audioFile);
       setProgress("Sending audio to Whisper...");
-
       const formData = new FormData();
       formData.append("file", fileToSend);
       formData.append("model", "whisper-1");
@@ -165,112 +131,40 @@ export default function App() {
 
   const analyzeSpeakers = async (whisperData) => {
     setStage("analyzing");
-    const rawText = whisperData.segments
-      .map((s) => `[${formatTime(s.start)}] ${s.text.trim()}`)
-      .join("\n");
-
-    const systemPrompt = `You are an expert conversation analyst for a real estate and mortgage professional named Tommy.
-Your job is to:
-1. Analyze a transcript and assign speaker labels (Speaker_0, Speaker_1, etc.) to each segment based on conversational cues. Use up to ${numSpeakers} speakers.
-2. Write a concise summary (3-5 sentences) tailored to a ${memoType} context.
-3. Extract clear action items as a JSON array of strings.
-4. Return ONLY valid JSON in this exact shape:
-{
-  "segments": [{"start": 0, "end": 5, "speaker": "Speaker_0", "text": "..."}],
-  "speakerGuesses": {"Speaker_0": "Tommy (likely)", "Speaker_1": "Client"},
-  "summary": "...",
-  "actionItems": ["...", "..."]
-}
-Do not include any markdown, code fences, or explanation. Pure JSON only.`;
-
-    const userPrompt = `Memo type: ${memoType}
-Number of speakers: ${numSpeakers}
-Raw transcript segments:
-${rawText}
-Original whisper data for timing reference:
-${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, text: s.text })))}`;
-
+    const rawText = whisperData.segments.map((s) => `[${formatTime(s.start)}] ${s.text.trim()}`).join("\n");
+    const systemPrompt = `You are an expert conversation analyst for a real estate and mortgage professional named Tommy. Analyze the transcript and assign speaker labels. Use up to ${numSpeakers} speakers. Write a 3-5 sentence summary for a ${memoType} context. Extract action items. Return ONLY valid JSON: {"segments":[{"start":0,"end":5,"speaker":"Speaker_0","text":"..."}],"speakerGuesses":{"Speaker_0":"Tommy (likely)","Speaker_1":"Client"},"summary":"...","actionItems":["..."]}`;
+    const userPrompt = `Memo type: ${memoType}\nSpeakers: ${numSpeakers}\n\n${rawText}\n\nTiming: ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, text: s.text })))}`;
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 4000,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000, system: systemPrompt, messages: [{ role: "user", content: userPrompt }] }),
     });
-
     const data = await res.json();
     const raw = data.content?.find(b => b.type === "text")?.text || "";
     let parsed;
-    try {
-      parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
-    } catch {
-      throw new Error("Claude returned invalid JSON. Try again.");
-    }
-
+    try { parsed = JSON.parse(raw.replace(/```json|```/g, "").trim()); }
+    catch { throw new Error("Claude returned invalid JSON. Try again."); }
     setTranscript(parsed.segments);
     setSpeakers(parsed.speakerGuesses || {});
     setSummary(parsed.summary || "");
     setActionItems(parsed.actionItems || []);
-    setLoganPacket({
-      source: "voice_memo",
-      file: audioFile.name,
-      memo_type: memoType,
-      timestamp: new Date().toISOString(),
-      summary: parsed.summary,
-      action_items: parsed.actionItems,
-      speakers: parsed.speakerGuesses,
-      transcript: parsed.segments,
-    });
+    setLoganPacket({ source: "voice_memo", file: audioFile.name, memo_type: memoType, timestamp: new Date().toISOString(), summary: parsed.summary, action_items: parsed.actionItems, speakers: parsed.speakerGuesses, transcript: parsed.segments });
     setStage("done");
     setActiveTab("transcript");
     setProgress("");
   };
 
-  const renameSpeaker = (key, newName) => {
-    setSpeakers((prev) => ({ ...prev, [key]: newName }));
-  };
-
+  const renameSpeaker = (key, newName) => setSpeakers((prev) => ({ ...prev, [key]: newName }));
   const speakerIndex = {};
   Object.keys(speakers).forEach((k, i) => { speakerIndex[k] = i; });
-
-  const copyTranscript = () => {
-    const text = transcript
-      .map(s => `[${formatTime(s.start)}] ${speakers[s.speaker] || s.speaker}: ${s.text}`)
-      .join("\n");
-    navigator.clipboard.writeText(text);
-  };
-
-  const copyLoganPacket = () => {
-    navigator.clipboard.writeText(JSON.stringify(loganPacket, null, 2));
-  };
-
+  const copyTranscript = () => navigator.clipboard.writeText(transcript.map(s => `[${formatTime(s.start)}] ${speakers[s.speaker] || s.speaker}: ${s.text}`).join("\n"));
+  const copyLoganPacket = () => navigator.clipboard.writeText(JSON.stringify(loganPacket, null, 2));
   const downloadTranscript = () => {
-    const text = [
-      `TRANSCRIPT — ${audioFile?.name}`,
-      `Date: ${new Date().toLocaleString()}`,
-      `Type: ${memoType}`,
-      ``,
-      `SUMMARY`,
-      summary,
-      ``,
-      `ACTION ITEMS`,
-      ...actionItems.map((a, i) => `${i + 1}. ${a}`),
-      ``,
-      `FULL TRANSCRIPT`,
-      ...transcript.map(s => `[${formatTime(s.start)}] ${speakers[s.speaker] || s.speaker}: ${s.text}`),
-    ].join("\n");
-    const blob = new Blob([text], { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `transcript-${Date.now()}.txt`;
-    a.click();
+    const text = [`TRANSCRIPT — ${audioFile?.name}`, `Date: ${new Date().toLocaleString()}`, ``, `SUMMARY`, summary, ``, `ACTION ITEMS`, ...actionItems.map((a, i) => `${i + 1}. ${a}`), ``, `FULL TRANSCRIPT`, ...transcript.map(s => `[${formatTime(s.start)}] ${speakers[s.speaker] || s.speaker}: ${s.text}`)].join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" })); a.download = `transcript-${Date.now()}.txt`; a.click();
   };
 
   const speakerKeys = Object.keys(speakers);
-
   const S = {
     app: { minHeight: "100vh", background: "linear-gradient(135deg, #231F20 0%, #1a2a35 60%, #185A7D 100%)", fontFamily: "'DM Sans', 'Segoe UI', sans-serif", color: "#fff" },
     header: { background: "linear-gradient(90deg, #185A7D, #231F20)", borderBottom: "2px solid #62B1BD", padding: "18px 32px", display: "flex", alignItems: "center", gap: "14px" },
@@ -287,43 +181,28 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
 
   return (
     <div style={S.app}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&display=swap');
-        * { box-sizing: border-box; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        .fi { animation: fadeIn 0.4s ease; }
-        input::placeholder { color: #555; }
-        select option { background: #1a2a35; }
-      `}</style>
-
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&display=swap'); *{box-sizing:border-box} @keyframes spin{to{transform:rotate(360deg)}} @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}} .fi{animation:fadeIn 0.4s ease} input::placeholder{color:#555} select option{background:#1a2a35}`}</style>
       <div style={S.header}>
-        <div>
-          <div style={{ fontSize: "11px", fontWeight: "800", letterSpacing: "3px", color: "#62B1BD" }}>REALTEAM</div>
-          <div style={{ fontSize: "10px", color: "#aaa", letterSpacing: "2px" }}>Real Estate</div>
-        </div>
+        <div><div style={{ fontSize: "11px", fontWeight: "800", letterSpacing: "3px", color: "#62B1BD" }}>REALTEAM</div><div style={{ fontSize: "10px", color: "#aaa", letterSpacing: "2px" }}>Real Estate</div></div>
         <div style={{ width: "1px", height: "36px", background: "rgba(98,177,189,0.3)", margin: "0 8px" }} />
         <div style={{ fontSize: "22px" }}>🎙️</div>
         <div style={{ fontSize: "20px", fontWeight: "700", marginLeft: "auto" }}>Voice Memo Transcriber</div>
       </div>
-
       <div style={S.container}>
         {!keyConfirmed && (
           <div style={S.card} className="fi">
-            <span style={S.label}>OpenAI API Key (Whisper)</span>
+            <span style={S.label}>OpenAI API Key — saved to your browser</span>
             <div style={{ display: "flex", gap: "10px" }}>
-              <input style={S.input} type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} onKeyDown={e => e.key === "Enter" && apiKey.startsWith("sk-") && setKeyConfirmed(true)} />
-              <button style={S.btn()} onClick={() => apiKey.startsWith("sk-") && setKeyConfirmed(true)}>Confirm</button>
+              <input style={S.input} type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} onKeyDown={e => e.key === "Enter" && confirmKey()} />
+              <button style={S.btn()} onClick={confirmKey}>Save & Continue</button>
             </div>
-            <p style={{ fontSize: "12px", color: "#888", marginTop: "10px" }}>Your key stays in your browser only. Never stored or sent anywhere else. Get one at platform.openai.com</p>
+            <p style={{ fontSize: "12px", color: "#888", marginTop: "10px" }}>Saved to this browser only. You won't need to enter it again.</p>
           </div>
         )}
-
         {keyConfirmed && (
           <>
             <div style={{ ...S.card, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "20px" }} className="fi">
-              <div>
-                <span style={S.label}>Memo Type</span>
+              <div><span style={S.label}>Memo Type</span>
                 <select style={{ ...S.input, cursor: "pointer" }} value={memoType} onChange={e => setMemoType(e.target.value)}>
                   <option value="client">Client Call – Real Estate</option>
                   <option value="mortgage">Mortgage Conversation</option>
@@ -331,32 +210,23 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                   <option value="personal">Personal Note / Idea</option>
                 </select>
               </div>
-              <div>
-                <span style={S.label}>Expected Speakers</span>
+              <div><span style={S.label}>Expected Speakers</span>
                 <select style={{ ...S.input, cursor: "pointer" }} value={numSpeakers} onChange={e => setNumSpeakers(Number(e.target.value))}>
-                  {[1,2,3,4,5,6].map(n => <option key={n} value={n}>{n} {n === 1 ? "speaker" : "speakers"}</option>)}
+                  {[1,2,3,4,5,6].map(n => <option key={n} value={n}>{n} {n===1?"speaker":"speakers"}</option>)}
                 </select>
               </div>
-              <div style={{ display: "flex", alignItems: "flex-end" }}>
-                <button style={{ ...S.btnGhost, fontSize: "12px" }} onClick={() => setKeyConfirmed(false)}>🔑 Change Key</button>
-              </div>
+              <div style={{ display: "flex", alignItems: "flex-end" }}><button style={{ ...S.btnGhost, fontSize: "12px" }} onClick={clearKey}>🔑 Change Key</button></div>
             </div>
-
             <div style={S.card} className="fi" onDrop={handleDrop} onDragOver={e => e.preventDefault()}>
               <div style={S.dropZone} onClick={() => fileRef.current.click()}>
                 <div style={{ fontSize: "40px", marginBottom: "10px" }}>🎤</div>
                 <div style={{ fontWeight: "700", fontSize: "16px", color: "#62B1BD" }}>Drop your voice memo here</div>
                 <div style={{ color: "#888", fontSize: "13px", marginTop: "6px" }}>or click to browse — .m4a .mp3 .mp4 .wav .ogg</div>
-                {audioFile && (
-                  <div style={{ marginTop: "14px", padding: "8px 16px", background: "rgba(98,177,189,0.1)", borderRadius: "8px", display: "inline-block", color: "#62B1BD", fontSize: "13px", fontWeight: "600" }}>
-                    📎 {audioFile.name} ({(audioFile.size / 1024 / 1024).toFixed(1)} MB)
-                  </div>
-                )}
+                {audioFile && <div style={{ marginTop: "14px", padding: "8px 16px", background: "rgba(98,177,189,0.1)", borderRadius: "8px", display: "inline-block", color: "#62B1BD", fontSize: "13px", fontWeight: "600" }}>📎 {audioFile.name} ({(audioFile.size/1024/1024).toFixed(1)} MB)</div>}
               </div>
               <input ref={fileRef} type="file" accept=".m4a,.mp3,.mp4,.wav,.ogg,.webm" style={{ display: "none" }} onChange={e => e.target.files[0] && loadFile(e.target.files[0])} />
               {audioUrl && <audio controls src={audioUrl} style={{ width: "100%", marginTop: "14px", borderRadius: "8px" }} />}
             </div>
-
             {audioFile && stage !== "done" && (
               <div style={{ textAlign: "center", marginBottom: "20px" }}>
                 {(stage === "transcribing" || stage === "analyzing") ? (
@@ -368,14 +238,12 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                 )}
               </div>
             )}
-
             {stage === "error" && (
               <div style={{ ...S.card, border: "1px solid #e76f51", color: "#e76f51" }}>
                 ⚠️ {error}
                 <button style={{ ...S.btnGhost, marginLeft: "16px", borderColor: "#e76f51", color: "#e76f51" }} onClick={() => setStage("idle")}>Retry</button>
               </div>
             )}
-
             {stage === "done" && transcript && (
               <div className="fi">
                 {speakerKeys.length > 0 && (
@@ -391,15 +259,13 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                     </div>
                   </div>
                 )}
-
                 <div style={{ display: "flex", gap: "4px", marginBottom: "-1px" }}>
                   {["transcript","summary","actions","logan"].map(tab => (
-                    <button key={tab} style={S.tab(activeTab === tab)} onClick={() => setActiveTab(tab)}>
+                    <button key={tab} style={S.tab(activeTab===tab)} onClick={() => setActiveTab(tab)}>
                       {{"transcript":"📄 Transcript","summary":"✨ Summary","actions":"✅ Actions","logan":"🤖 Logan"}[tab]}
                     </button>
                   ))}
                 </div>
-
                 <div style={S.card}>
                   {activeTab === "transcript" && (
                     <>
@@ -413,13 +279,12 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                       {transcript.map((seg, i) => (
                         <div key={i} style={{ display: "flex", gap: "14px", padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.05)", alignItems: "flex-start" }}>
                           <span style={{ fontSize: "10px", color: "#666", minWidth: "44px", paddingTop: "3px" }}>{formatTime(seg.start)}</span>
-                          <span style={{ minWidth: "110px", fontSize: "11px", fontWeight: "700", color: speakerColor(speakerIndex[seg.speaker] ?? 0), letterSpacing: "0.5px", paddingTop: "2px" }}>{speakers[seg.speaker] || seg.speaker}</span>
+                          <span style={{ minWidth: "110px", fontSize: "11px", fontWeight: "700", color: speakerColor(speakerIndex[seg.speaker]??0), letterSpacing: "0.5px", paddingTop: "2px" }}>{speakers[seg.speaker]||seg.speaker}</span>
                           <span style={{ fontSize: "14px", lineHeight: "1.6", color: "#e8e8e8" }}>{seg.text}</span>
                         </div>
                       ))}
                     </>
                   )}
-
                   {activeTab === "summary" && (
                     <>
                       <span style={S.label}>AI Summary</span>
@@ -427,14 +292,13 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                       <button style={{ ...S.btnGhost, marginTop: "16px" }} onClick={() => navigator.clipboard.writeText(summary)}>📋 Copy Summary</button>
                     </>
                   )}
-
                   {activeTab === "actions" && (
                     <>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
                         <span style={{ ...S.label, margin: 0 }}>Action Items</span>
-                        <button style={S.btnGhost} onClick={() => navigator.clipboard.writeText(actionItems.map((a,i) => `${i+1}. ${a}`).join("\n"))}>📋 Copy All</button>
+                        <button style={S.btnGhost} onClick={() => navigator.clipboard.writeText(actionItems.map((a,i)=>`${i+1}. ${a}`).join("\n"))}>📋 Copy All</button>
                       </div>
-                      {actionItems.length === 0 && <p style={{ color: "#888" }}>No action items detected.</p>}
+                      {actionItems.length===0 && <p style={{ color: "#888" }}>No action items detected.</p>}
                       {actionItems.map((item, i) => (
                         <div key={i} style={{ display: "flex", gap: "12px", alignItems: "flex-start", padding: "12px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
                           <input type="checkbox" style={{ width: "18px", height: "18px", accentColor: "#62B1BD", marginTop: "2px", cursor: "pointer" }} />
@@ -443,7 +307,6 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                       ))}
                     </>
                   )}
-
                   {activeTab === "logan" && (
                     <>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
@@ -457,7 +320,6 @@ ${JSON.stringify(whisperData.segments.map(s => ({ start: s.start, end: s.end, te
                     </>
                   )}
                 </div>
-
                 <div style={{ textAlign: "center", marginTop: "16px" }}>
                   <button style={S.btnGhost} onClick={() => { setStage("idle"); setTranscript(null); setAudioFile(null); setAudioUrl(null); }}>🔄 New Memo</button>
                 </div>
