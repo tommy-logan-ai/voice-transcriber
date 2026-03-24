@@ -12,8 +12,8 @@ function speakerColor(index) {
 }
 
 export default function App() {
-  const [apiKey, setApiKey] = useState("");
-  const [keyConfirmed, setKeyConfirmed] = useState(false);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("openai_key") || "");
+  const [keyConfirmed, setKeyConfirmed] = useState(() => !!localStorage.getItem("openai_key"));
   const [audioFile, setAudioFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
   const [numSpeakers, setNumSpeakers] = useState(2);
@@ -28,6 +28,19 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("transcript");
   const [error, setError] = useState("");
   const fileRef = useRef();
+
+  const confirmKey = () => {
+    if (apiKey.startsWith("sk-")) {
+      localStorage.setItem("openai_key", apiKey);
+      setKeyConfirmed(true);
+    }
+  };
+
+  const clearKey = () => {
+    localStorage.removeItem("openai_key");
+    setApiKey("");
+    setKeyConfirmed(false);
+  };
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -182,12 +195,12 @@ export default function App() {
       <div style={S.container}>
         {!keyConfirmed && (
           <div style={S.card} className="fi">
-            <span style={S.label}>OpenAI API Key (Whisper)</span>
+            <span style={S.label}>OpenAI API Key (Whisper) — saved in your browser</span>
             <div style={{ display: "flex", gap: "10px" }}>
-              <input style={S.input} type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} onKeyDown={e => e.key === "Enter" && apiKey.startsWith("sk-") && setKeyConfirmed(true)} />
-              <button style={S.btn()} onClick={() => apiKey.startsWith("sk-") && setKeyConfirmed(true)}>Confirm</button>
+              <input style={S.input} type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} onKeyDown={e => e.key === "Enter" && confirmKey()} />
+              <button style={S.btn()} onClick={confirmKey}>Save & Continue</button>
             </div>
-            <p style={{ fontSize: "12px", color: "#888", marginTop: "10px" }}>Your key stays in your browser only. Get one at platform.openai.com</p>
+            <p style={{ fontSize: "12px", color: "#888", marginTop: "10px" }}>Saved to this browser only. You won't need to enter it again.</p>
           </div>
         )}
         {keyConfirmed && (
@@ -206,7 +219,7 @@ export default function App() {
                   {[1,2,3,4,5,6].map(n => <option key={n} value={n}>{n} {n===1?"speaker":"speakers"}</option>)}
                 </select>
               </div>
-              <div style={{ display: "flex", alignItems: "flex-end" }}><button style={{ ...S.btnGhost, fontSize: "12px" }} onClick={() => setKeyConfirmed(false)}>🔑 Change Key</button></div>
+              <div style={{ display: "flex", alignItems: "flex-end" }}><button style={{ ...S.btnGhost, fontSize: "12px" }} onClick={clearKey}>🔑 Change Key</button></div>
             </div>
             <div style={S.card} className="fi" onDrop={handleDrop} onDragOver={e => e.preventDefault()}>
               <div style={S.dropZone} onClick={() => fileRef.current.click()}>
